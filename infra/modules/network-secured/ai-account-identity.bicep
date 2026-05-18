@@ -8,6 +8,13 @@ param modelCapacity int
 param agentSubnetId string
 param networkInjection string = 'true'
 
+@description('Public network access setting for the AI Services account')
+@allowed([
+  'Disabled'
+  'Enabled'
+])
+param publicNetworkAccess string = 'Disabled'
+
 // True BYO Foundry account.
 // When existingAccountResourceId is set, reference the existing AI Foundry
 // (Cognitive Services AIServices kind) account instead of creating a new one
@@ -44,7 +51,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if 
       ipRules: []
       bypass:'AzureServices'
     }
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: publicNetworkAccess
     networkInjections:((networkInjection == 'true') ? [
       {
         scenario: 'agent'
@@ -52,7 +59,7 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' = if 
         useMicrosoftManagedNetwork: false
       }
       ] : null )
-    disableLocalAuth: false
+    disableLocalAuth: true
   }
 }
 

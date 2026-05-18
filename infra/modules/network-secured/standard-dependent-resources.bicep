@@ -29,6 +29,13 @@ param aiSearchExists bool
 param azureStorageExists bool
 param cosmosDBExists bool
 
+@description('Public network access setting for all dependent services')
+@allowed([
+  'Disabled'
+  'Enabled'
+])
+param publicNetworkAccess string = 'Disabled'
+
 var cosmosParts = split(cosmosDBResourceId, '/')
 
 resource existingCosmosDB 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = if (cosmosDBExists) {
@@ -51,7 +58,7 @@ resource cosmosDB 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' = if(!cosmo
     disableLocalAuth: true
     enableAutomaticFailover: false
     enableMultipleWriteLocations: false
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: publicNetworkAccess
     enableFreeTier: false
     locations: [
       {
@@ -87,7 +94,7 @@ resource aiSearch 'Microsoft.Search/searchServices@2024-06-01-preview' = if(!aiS
     }
     hostingMode: 'default'
     partitionCount: 1
-    publicNetworkAccess: 'disabled'
+    publicNetworkAccess: publicNetworkAccess
     replicaCount: 1
     semanticSearch: 'disabled'
     networkRuleSet: {
@@ -121,7 +128,7 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = if(!azureStora
   properties: {
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: publicNetworkAccess
     networkAcls: {
       bypass: 'AzureServices'
       defaultAction: 'Deny'
