@@ -1,22 +1,21 @@
 using './main.bicep'
 
-param location = 'westus'
-param aiServices = 'foundry'
+param location = 'swedencentral'
+param workloadName = 'minion'
+param environment = 'dev'
 param modelName = 'gpt-4.1'
 param modelFormat = 'OpenAI'
 param modelVersion = '2025-04-14'
 param modelSkuName = 'GlobalStandard'
 param modelCapacity = 30
-param firstProjectName = 'project'
 param projectDescription = 'A project for the AI Foundry account with network secured deployed Agent'
-param displayName = 'project'
-param peSubnetName = 'pe-subnet'
+param peSubnetName = 'snet-pe'
 
 // Resource IDs for existing resources
 // If you provide these, the deployment will use the existing resources instead of creating new ones
 param existingVnetResourceId = ''
-param vnetName = 'agent-vnet-test'
-param agentSubnetName = 'agent-subnet'
+param vnetName = ''
+param agentSubnetName = 'snet-agents'
 param aiSearchResourceId = ''
 param azureStorageAccountResourceId = ''
 param azureCosmosDBAccountResourceId = ''
@@ -70,4 +69,11 @@ param dnsZoneNames = [
 param vnetAddressPrefix = ''
 param agentSubnetPrefix = ''
 param peSubnetPrefix = ''
+
+// Fixed suffix for idempotent re-deployments. Set after first deploy to keep resource names stable.
+// Find your suffix in resource names: ais-minion-dev-swc-<THIS>
+param resourceSuffix = 'hg2d'
+
+// Public network access for all services (Disabled = full lockdown, Enabled = allow public access)
+param publicNetworkAccess = 'Enabled'
 
