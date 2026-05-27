@@ -656,3 +656,21 @@ Each new project deployment creates:
 - [Private Endpoint Documentation](https://learn.microsoft.com/en-us/azure/private-link/)
 - [RBAC Documentation](https://learn.microsoft.com/en-us/azure/role-based-access-control/)
 - [Network Security Best Practices](https://learn.microsoft.com/en-us/azure/security/fundamentals/network-best-practices)
+
+
+
+# 1. Deploy infrastructure (container + roles)
+az deployment group create -g $RESOURCE_GROUP -f infra/main.bicep -p infra/main.bicepparam
+
+# 2. Create search pipeline components (REST API)
+.\scripts\bootstraps\create-search-pipeline.ps1 `
+  -ResourceGroup "rg-minion-dev-swe-003" `
+  -SearchServiceName "srch-minion-dev-swc-hg2d" `
+  -StorageAccountResourceId "/subscriptions/d499a328-d498-40e0-8882-2e0a1eb904d2/resourceGroups/rg-minion-dev-swe-003/providers/Microsoft.Storage/storageAccounts/stminiondevswchg2d" `
+  -AiServicesResourceId "/subscriptions/d499a328-d498-40e0-8882-2e0a1eb904d2/resourceGroups/rg-minion-dev-swe-003/providers/Microsoft.CognitiveServices/accounts/ais-minion-dev-swc-hg2d"
+
+# 3. Upload sample data
+.\scripts\bootstraps\upload-search-sample-data.ps1 -ResourceGroup "rg-minion-dev-swe-003" -StorageAccountName "stminiondevswchg2d"
+
+# 4. Validate
+.\scripts\bootstraps\validate-search-pipeline.ps1 -ResourceGroup "rg-minion-dev-swe-003" -SearchServiceName "srch-minion-dev-swc-hg2d"
