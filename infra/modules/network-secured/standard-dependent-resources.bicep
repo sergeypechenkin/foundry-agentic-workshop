@@ -138,6 +138,25 @@ resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = if(!azureStora
   }
 }
 
+// CORS configuration for Document Intelligence Studio access
+resource storageBlobService 'Microsoft.Storage/storageAccounts/blobServices@2023-05-01' = if (!azureStorageExists) {
+  parent: storage
+  name: 'default'
+  properties: {
+    cors: {
+      corsRules: [
+        {
+          allowedOrigins: ['https://documentintelligence.ai.azure.com']
+          allowedMethods: ['GET', 'POST', 'PUT', 'DELETE', 'HEAD', 'OPTIONS', 'MERGE', 'PATCH']
+          allowedHeaders: ['*']
+          exposedHeaders: ['*']
+          maxAgeInSeconds: 120
+        }
+      ]
+    }
+  }
+}
+
 output aiSearchName string = aiSearchExists ? existingSearchService.name : aiSearch.name
 output aiSearchID string = aiSearchExists ? existingSearchService.id : aiSearch.id
 output aiSearchServiceResourceGroupName string = aiSearchExists ? acsParts[4] : resourceGroup().name

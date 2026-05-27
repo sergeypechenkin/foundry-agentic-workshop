@@ -674,3 +674,17 @@ az deployment group create -g $RESOURCE_GROUP -f infra/main.bicep -p infra/main.
 
 # 4. Validate
 .\scripts\bootstraps\validate-search-pipeline.ps1 -ResourceGroup "rg-minion-dev-swe-003" -SearchServiceName "srch-minion-dev-swc-hg2d"
+
+
+
+
+1.5 Let's retrieve the necessary keys
+After deploying the resources, you will need to configure the environment variables in the .env file. Double check you have logged in into your Azure account on the CLI. If that's settled, let's move into retrieving our keys. The .env file is a configuration file that contains the environment variables for the application. The .env file is automatically created by running the following command within the terminal in your Codespace.
+
+Then run the get-keys script with your resource group name:
+
+cd  scripts/bootstraps/get-keys.sh --resource-group YOUR_RESOURCE_GROUP_NAME
+Replace YOUR_RESOURCE_GROUP_NAME with the actual name of the resource group created on step 1.3.
+
+This script will connect to Azure and fetch the necessary keys and populate the .env file with the required values in the root directory of the repository.
+

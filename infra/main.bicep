@@ -168,7 +168,7 @@ param azureCosmosDBAccountResourceId string = ''
   'Disabled'
   'Enabled'
 ])
-param publicNetworkAccess string = 'Disabled'
+param publicNetworkAccess string = 'Enabled'
 
 //New Param for resource group of Private DNS zones
 //@description('Optional: Resource group containing existing private DNS zones. If specified, DNS zones will not be created.')
@@ -212,6 +212,9 @@ var cosmosDBName = length(cosmosDBNameRaw) > 44 ? substring(cosmosDBNameRaw, 0, 
 
 // CAF AI Search: srch-<workload>-<env>-<region>-<suffix>
 var aiSearchName = toLower('srch-${workloadName}-${environment}-${locationAbbr}-${uniqueSuffix}')
+
+// CAF Document Intelligence: di-<workload>-<env>-<region>-<suffix>
+var docIntelligenceName = toLower('di-${workloadName}-${environment}-${locationAbbr}-${uniqueSuffix}')
 
 // Check if existing resources have been passed in
 var storagePassedIn = azureStorageAccountResourceId != ''
@@ -363,6 +366,7 @@ module privateEndpointAndDNS './modules/network-secured/private-endpoint-and-dns
       aiSearchName: aiDependencies.outputs.aiSearchName       // AI Search to secure
       storageName: aiDependencies.outputs.azureStorageName        // Storage to secure
       cosmosDBName:aiDependencies.outputs.cosmosDBName
+      docIntelligenceName: deployDocumentIntelligence ? docIntelligenceName : ''
       vnetName: vnet.outputs.virtualNetworkName    // VNet containing subnets
       peSubnetName: vnet.outputs.peSubnetName        // Subnet for private endpoints
       suffix: uniqueSuffix                                    // Unique identifier
@@ -381,6 +385,7 @@ module privateEndpointAndDNS './modules/network-secured/private-endpoint-and-dns
     aiSearch      // Ensure AI Search exists
     storage       // Ensure Storage exists
     cosmosDB      // Ensure Cosmos DB exists
+    documentIntelligence // Ensure Document Intelligence exists
   ]
   }
 
@@ -587,3 +592,50 @@ resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployme
     }
   }
 }
+
+// --- Azure Document Intelligence ---
+// Deploys a Document Intelligence (Form Recognizer) account for document layout analysis.
+
+@description('Deploy Azure Document Intelligence resource for form/document recognition.')
+param deployDocumentIntelligence bool = true
+
+resource documentIntelligence 'Microsoft.CognitiveServices/accounts@2024-10-01' = if (deployDocumentIntelligence) {
+  name: docIntelligenceName
+  location: location
+  kind: 'FormRecognizer'
+  identity: {
+    type: 'SystemAssigned'
+  }
+  sku: {
+    name: 'S0'
+  }
+  properties: {
+    customSubDomainName: docIntelligenceName
+    publicNetworkAccess: publicNetworkAccess
+    networkAcls: {
+      defaultAction: 'Deny'
+    }
+  }
+}
+
+// Blob container for storing forms (PDF/JPG) to be processed by Document Intelligence
+module formsContainer './modules/network-secured/search-sample-data-container.bicep' = if (deployDocumentIntelligence) {
+  name: 'forms-container-${uniqueSuffix}-deployment'
+  scope: resourceGroup(azureStorageSubscriptionId, azureStorageResourceGroupName)
+  params: {
+    storageName: aiDependencies.outputs.azureStorageName
+    containerName: 'forms'
+  }
+  dependsOn: [
+    storage
+    privateEndpointAndDNS
+  ]
+}
+
+// --- Outputs for local development configuration ---
+output azureOpenAiEndpoint string = aiAccount.outputs.accountTarget
+output documentIntelligenceEndpoint string = deployDocumentIntelligence
+  ? 'https://${docIntelligenceName}.cognitiveservices.azure.com/'
+  : ''
+output azureOpenAiDeployment string = modelName
+output storageAccountName string = aiDependencies.outputs.azureStorageName

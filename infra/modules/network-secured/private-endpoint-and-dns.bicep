@@ -31,6 +31,8 @@ param aiSearchName string
 param storageName string
 @description('Name of the Cosmos DB account')
 param cosmosDBName string
+@description('Name of the Document Intelligence account (empty to skip)')
+param docIntelligenceName string = ''
 @description('Name of the Vnet')
 param vnetName string
 @description('Name of the Customer subnet')
@@ -94,6 +96,13 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-05-01' existing 
 resource cosmosDBAccount 'Microsoft.DocumentDB/databaseAccounts@2024-11-15' existing = {
   name: cosmosDBName
   scope: resourceGroup(cosmosDBSubscriptionId, cosmosDBResourceGroupName)
+}
+
+// Reference existing Document Intelligence account (if deployed)
+var deployDocIntelligence = !empty(docIntelligenceName)
+resource docIntelligenceAccount 'Microsoft.CognitiveServices/accounts@2024-10-01' existing = if (deployDocIntelligence) {
+  name: docIntelligenceName
+  scope: resourceGroup()
 }
 
 // Reference existing network resources
@@ -185,6 +194,28 @@ resource cosmosDBPrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01'
         properties: {
           privateLinkServiceId: cosmosDBAccount.id // Target Cosmos DB account
           groupIds: [ 'Sql' ]
+        }
+      }
+    ]
+  }
+}
+
+/* -------------------------------------------- Document Intelligence Private Endpoint -------------------------------------------- */
+
+// Private endpoint for Document Intelligence (Form Recognizer)
+// - Creates network interface in customer hub subnet
+// - Establishes private connection to Document Intelligence service
+resource docIntelligencePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = if (deployDocIntelligence) {
+  name: '${docIntelligenceName}-private-endpoint'
+  location: resourceGroup().location
+  properties: {
+    subnet: { id: peSubnet.id }
+    privateLinkServiceConnections: [
+      {
+        name: '${docIntelligenceName}-private-link-service-connection'
+        properties: {
+          privateLinkServiceId: docIntelligenceAccount.id
+          groupIds: [ 'account' ]
         }
       }
     ]
@@ -401,5 +432,18 @@ resource cosmosDBDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGrou
   }
   dependsOn: [
     empty(cosmosDBDnsZoneRG) ? cosmosDBLink : null
+  ]
+}
+
+resource docIntelligenceDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = if (deployDocIntelligence) {
+  parent: docIntelligencePrivateEndpoint
+  name: '${docIntelligenceName}-dns-group'
+  properties: {
+    privateDnsZoneConfigs: [
+      { name: '${docIntelligenceName}-dns-config', properties: { privateDnsZoneId: cognitiveServicesDnsZoneId } }
+    ]
+  }
+  dependsOn: [
+    empty(cognitiveServicesDnsZoneRG) ? cognitiveServicesLink : null
   ]
 }
