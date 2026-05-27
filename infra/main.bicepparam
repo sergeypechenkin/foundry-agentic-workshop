@@ -75,5 +75,11 @@ param peSubnetPrefix = ''
 param resourceSuffix = 'hg2d'
 
 // Public network access for all services (Disabled = full lockdown, Enabled = allow public access)
-param publicNetworkAccess = 'Enabled'
+param publicNetworkAccess = 'Disabled'
+
+// Deploy AI Search connectivity test pipeline (set to true to create index, skillset, indexer)
+param deploySearchPipeline = true
+
+// Deploy text-embedding-3-small model for vector search skills
+param deployEmbeddingModel = true
 

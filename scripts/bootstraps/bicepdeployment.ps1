@@ -46,6 +46,7 @@ az deployment group create `
 
 $uri = "https://management.azure.com/subscriptions/d499a328-d498-40e0-8882-2e0a1eb904d2/resourceGroups/$RESOURCE_GROUP/providers/Microsoft.CognitiveServices/accounts/ais-minion-dev-swc-$Suffix`?api-version=2025-04-01-preview"
 $body = '{"properties": {"publicNetworkAccess": "Enabled", "networkAcls": {"defaultAction": "Allow"}}}'
+$body = '{"properties": {"publicNetworkAccess": "Disabled", "networkAcls": {"defaultAction": "Deny", "bypass": "AzureServices"}}}'
 
 # Enable Public Network after deployment
 Invoke-RestMethod -Method PATCH -Uri $uri `
@@ -54,8 +55,7 @@ Invoke-RestMethod -Method PATCH -Uri $uri `
 
 # AI Search
 az search service update --name "srch-minion-dev-swc-$Suffix" -g $RESOURCE_GROUP `
-  --public-network-access enabled `
-  --default-action Allow
+  --public-network-access enabled
 
 # Storage
 az storage account update --name "stminiondevswc$Suffix" -g $RESOURCE_GROUP `
@@ -64,5 +64,4 @@ az storage account update --name "stminiondevswc$Suffix" -g $RESOURCE_GROUP `
 
 # Cosmos DB
 az cosmosdb update --name "cosmos-minion-dev-swc-$Suffix" -g $RESOURCE_GROUP `
-  --enable-public-network true `
-  --default-action Allow
+  --enable-public-network true

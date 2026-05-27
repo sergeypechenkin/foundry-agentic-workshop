@@ -536,3 +536,54 @@ dependsOn: [
   storageContainersRoleAssignment
   ]
 }
+
+// --- AI Search Pipeline (opt-in) ---
+// Deploys data source, index, skillset, and indexer to validate end-to-end
+// connectivity between AI Search and Foundry AI Services via private endpoints.
+// After deployment, upload sample data and run the indexer to verify.
+
+@description('Deploy AI Search connectivity test pipeline (data source, index, skillset, indexer). Requires sample data upload after deployment.')
+param deploySearchPipeline bool = false
+
+@description('Deploy text-embedding-3-small model for AI Search vector skills. Only used when deploySearchPipeline is true.')
+param deployEmbeddingModel bool = false
+
+module searchPipeline './modules/network-secured/search-pipeline.bicep' = if (deploySearchPipeline) {
+  name: 'search-pipeline-${uniqueSuffix}-deployment'
+  params: {
+    aiSearchName: aiDependencies.outputs.aiSearchName
+    storageName: aiDependencies.outputs.azureStorageName
+    storageSubscriptionId: aiDependencies.outputs.azureStorageSubscriptionId
+    storageResourceGroupName: aiDependencies.outputs.azureStorageResourceGroupName
+    aiServicesAccountName: aiAccount.outputs.accountName
+    aiServicesAccountResourceId: aiAccount.outputs.accountID
+  }
+  dependsOn: [
+    aiSearch
+    storage
+    privateEndpointAndDNS
+    aiSearchRoleAssignments
+  ]
+}
+
+// Deploy text-embedding-3-small model for vector search skills
+resource aiServicesAccountRef 'Microsoft.CognitiveServices/accounts@2025-04-01-preview' existing = if (deploySearchPipeline && deployEmbeddingModel) {
+  name: accountName
+}
+
+#disable-next-line BCP081
+resource embeddingModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2025-04-01-preview' = if (deploySearchPipeline && deployEmbeddingModel) {
+  parent: aiServicesAccountRef
+  name: 'text-embedding-3-small'
+  sku: {
+    capacity: 30
+    name: 'GlobalStandard'
+  }
+  properties: {
+    model: {
+      name: 'text-embedding-3-small'
+      format: 'OpenAI'
+      version: '1'
+    }
+  }
+}
