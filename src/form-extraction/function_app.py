@@ -12,6 +12,7 @@ import azure.functions as func
 
 from utils.doc_intelligence import analyze_layout, build_word_confidence_map, strip_page_numbers
 from utils.llm_extraction import extract_fields
+from utils.direct_llm_extraction import extract_fields_direct
 from utils.normalizer import normalize_fields
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
@@ -61,8 +62,22 @@ async def extract_form(req: func.HttpRequest) -> func.HttpResponse:
         word_conf_map = build_word_confidence_map(result)
         fields = normalize_fields(fields, word_confidence_map=word_conf_map)
 
+        # Parallel path: direct LLM extraction (raw document → GPT-5.2)
+        direct_fields = None
+        if file_content:
+            try:
+                direct_fields = extract_fields_direct(file_content)
+            except Exception as e:
+                logging.warning("Direct LLM extraction failed: %s", e)
+
+        response_payload = {
+            "fields": fields,
+        }
+        if direct_fields is not None:
+            response_payload["direct_llm_fields"] = direct_fields
+
         return func.HttpResponse(
-            json.dumps(fields, ensure_ascii=False),
+            json.dumps(response_payload, ensure_ascii=False),
             status_code=200,
             mimetype="application/json",
         )

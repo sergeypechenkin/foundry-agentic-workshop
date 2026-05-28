@@ -8,26 +8,75 @@ def generate_html_report(
     fields: dict,
     output_path: str | Path | None = None,
     word_confidence_map: dict[str, float] | None = None,
+    layout_text: str | None = None,
+    llm_fields: dict | None = None,
+    word_confidence_sequence: list[tuple[str, float]] | None = None,
+    direct_llm_fields: dict | None = None,
 ) -> str:
-    """Generate HTML document preserving document structure as collapsible tree.
+    """Generate HTML document with pipeline stages.
 
-    Values with confidence < 0.7 are highlighted in red.
-    Values with confidence 0.7-0.9 are highlighted in orange.
-    Values with confidence >= 0.9 are green.
+    Sections:
+        1. Final (normalized) — after layout + LLM + normalization
+        2. LLM extraction — JSON from LLM before normalization
+        2b. Direct LLM extraction — JSON from GPT-5.2 (raw document, no OCR)
+        3. Layout (raw OCR) — text from Document Intelligence before LLM
 
     Args:
         fields: Normalized fields dict (may contain {value, confidence} entries).
         output_path: Optional path to write the HTML file.
-        word_confidence_map: Optional OCR word→confidence mapping for the layout section.
+        word_confidence_map: Optional OCR word→confidence mapping.
+        layout_text: Raw text from Document Intelligence layout analysis.
+        llm_fields: Fields extracted by LLM before normalization.
+        word_confidence_sequence: Ordered (word, confidence) pairs for positional rendering.
+        direct_llm_fields: Fields extracted by direct GPT-5.2 call (no OCR preprocessing).
 
     Returns:
         HTML string.
     """
     tree_html = _render_node(fields, depth=0)
 
+    # Section 2: LLM extraction (pre-normalization JSON)
+    llm_section = ""
+    if llm_fields is not None:
+        llm_json = _escape(json.dumps(llm_fields, indent=2, ensure_ascii=False))
+        llm_section = (
+            '<details class="pipeline-section" open>\n'
+            '  <summary class="pipeline-title">2. LLM Extraction (before normalization)</summary>\n'
+            f'  <pre class="pipeline-pre">{llm_json}</pre>\n'
+            '</details>\n'
+        )
+
+    # Section 2b: Direct LLM extraction (raw document → GPT-5.2)
+    direct_llm_section = ""
+    if direct_llm_fields is not None:
+        direct_tree_html = _render_direct_llm(direct_llm_fields)
+        direct_llm_section = (
+            '<details class="pipeline-section" open>\n'
+            '  <summary class="pipeline-title">2b. Direct LLM Extraction (GPT-5.2, no OCR)</summary>\n'
+            f'  <div style="margin-top: 0.75rem;">{direct_tree_html}</div>\n'
+            '</details>\n'
+        )
+
+    # Section 3: Raw layout text with word-level confidence highlighting
+    layout_section = ""
+    if layout_text is not None:
+        if word_confidence_sequence:
+            highlighted_layout = _render_layout_with_confidence(layout_text, word_confidence_sequence)
+        else:
+            highlighted_layout = f'<pre class="pipeline-pre">{_escape(layout_text)}</pre>'
+        layout_section = (
+            '<details class="pipeline-section">\n'
+            '  <summary class="pipeline-title">3. Raw OCR Layout (Document Intelligence)</summary>\n'
+            f'  <div class="layout-highlighted">{highlighted_layout}</div>\n'
+            '</details>\n'
+        )
+
     ocr_section = _render_ocr_section(word_confidence_map) if word_confidence_map else ""
 
     html = _HTML_TEMPLATE.replace("{{TREE_CONTENT}}", tree_html)
+    html = html.replace("{{LLM_SECTION}}", llm_section)
+    html = html.replace("{{DIRECT_LLM_SECTION}}", direct_llm_section)
+    html = html.replace("{{LAYOUT_SECTION}}", layout_section)
     html = html.replace("{{OCR_SECTION}}", ocr_section)
     html = html.replace("{{JSON_DATA}}", _escape(json.dumps(fields, indent=2, ensure_ascii=False)))
 
@@ -139,6 +188,217 @@ def _escape(text: str) -> str:
         .replace(">", "&gt;")
         .replace('"', "&quot;")
     )
+
+
+def _render_direct_llm(data: dict) -> str:
+    """Render direct LLM extraction as a flat tree (no page split).
+
+    - Sections/subsections become collapsible <details>
+    - Fields render as key-value rows with confidence coloring
+    - Checkboxes show ☑/☐ icon next to label
+    - Tables render headers + rows as field rows
+    - Removes type/handwritten/uncertain display
+    """
+    # Flatten pages — collect all sections regardless of page
+    pages = []
+    if "document" in data and "pages" in data["document"]:
+        pages = data["document"]["pages"]
+    elif "pages" in data:
+        pages = data["pages"]
+
+    all_sections: list[dict] = []
+    for page in pages:
+        all_sections.extend(page.get("sections", []))
+
+    if not all_sections:
+        # Fallback: render as generic tree if structure is unexpected
+        return _render_node(data, depth=0)
+
+    html = ""
+    for section in all_sections:
+        html += _render_direct_section(section, depth=0)
+    return html
+
+
+def _render_direct_section(section: dict, depth: int) -> str:
+    """Render a single section (with title, content, subsections)."""
+    title = section.get("title") or "Untitled Section"
+    conf = section.get("confidence")
+    color, badge = _confidence_style(conf)
+
+    # Section header with confidence
+    title_html = f'{_escape(title)}'
+    if conf is not None:
+        title_html += (
+            f' <span class="conf-badge" style="color:{color}" '
+            f'title="Section confidence: {conf:.2f}">{badge} {conf:.2f}</span>'
+        )
+
+    html = (
+        f'<details class="section depth-{min(depth, 3)}" open>\n'
+        f'  <summary class="section-title">{title_html}</summary>\n'
+        f'  <div class="section-body">\n'
+    )
+
+    # Render content items
+    for item in section.get("content", []):
+        html += _render_direct_content_item(item)
+
+    # Render subsections recursively
+    for subsection in section.get("subsections", []):
+        html += _render_direct_section(subsection, depth + 1)
+
+    html += '  </div>\n</details>\n'
+    return html
+
+
+def _render_direct_content_item(item: dict) -> str:
+    """Render a content item (field, checkbox, text_block, table)."""
+    item_type = item.get("type", "field")
+    conf = item.get("confidence")
+
+    if item_type == "checkbox":
+        checked = item.get("checked")
+        icon = "☑" if checked else "☐"
+        label = item.get("label", "")
+        color, badge = _confidence_style(conf)
+        conf_str = f"{conf:.2f}" if conf is not None else ""
+        return (
+            f'<div class="field-row">\n'
+            f'  <span class="field-key">{icon} {_escape(label)}</span>\n'
+            f'  <span class="field-value">'
+            f'<span class="value-text" style="color:{color}">{"Yes" if checked else "No" if checked is not None else "—"}</span>'
+            f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">'
+            f'{badge} {conf_str}</span>'
+            f'</span>\n'
+            f'</div>\n'
+        )
+
+    elif item_type == "text_block":
+        text = item.get("text", "")
+        color, badge = _confidence_style(conf)
+        conf_str = f"{conf:.2f}" if conf is not None else ""
+        return (
+            f'<div class="field-row">\n'
+            f'  <span class="field-key">Text</span>\n'
+            f'  <span class="field-value">'
+            f'<span class="value-text" style="color:{color}">{_escape(text)}</span>'
+            f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">'
+            f'{badge} {conf_str}</span>'
+            f'</span>\n'
+            f'</div>\n'
+        )
+
+    elif item_type == "table":
+        headers = item.get("headers", [])
+        rows = item.get("rows", [])
+        color, badge = _confidence_style(conf)
+        conf_str = f"{conf:.2f}" if conf is not None else ""
+        html = ""
+        # Render each row with headers as labels
+        for row in rows:
+            for i, cell in enumerate(row):
+                label = headers[i] if i < len(headers) else f"Column {i+1}"
+                html += (
+                    f'<div class="field-row">\n'
+                    f'  <span class="field-key">{_escape(label)}</span>\n'
+                    f'  <span class="field-value">'
+                    f'<span class="value-text" style="color:{color}">{_escape(str(cell))}</span>'
+                    f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">'
+                    f'{badge} {conf_str}</span>'
+                    f'</span>\n'
+                    f'</div>\n'
+                )
+        return html
+
+    else:
+        # Default: field type
+        label = item.get("label", "")
+        value = item.get("value")
+        color, badge = _confidence_style(conf)
+        conf_str = f"{conf:.2f}" if conf is not None else ""
+        value_html = f'<span class="value-text" style="color:{color}">{_escape(str(value))}</span>' if value is not None else '<span class="value-null">—</span>'
+        return (
+            f'<div class="field-row">\n'
+            f'  <span class="field-key">{_escape(label)}</span>\n'
+            f'  <span class="field-value">'
+            f'{value_html}'
+            f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">'
+            f'{badge} {conf_str}</span>'
+            f'</span>\n'
+            f'</div>\n'
+        )
+
+
+def _render_layout_with_confidence(layout_text: str, word_sequence: list[tuple[str, float]]) -> str:
+    """Render layout text with each word colored by its positional OCR confidence.
+
+    Uses the ordered word_sequence from Document Intelligence so each word instance
+    gets its own confidence (not the aggregated min across all occurrences).
+    Uses index-based lookahead to avoid losing sync when tokenization differs.
+    """
+    import re as _re
+
+    def _color_for_conf(conf: float) -> str:
+        if conf < 0.7:
+            return "#dc3545"
+        if conf < 0.9:
+            return "#fd7e14"
+        return "#28a745"
+
+    def _normalize(s: str) -> str:
+        """Normalize text for matching: strip punctuation, lowercase."""
+        return s.strip('.,;:!?()[]"\'-\u2013\u2014/\\').lower()
+
+    # Use index-based approach to allow lookahead without losing sync
+    seq_idx = 0
+    max_lookahead = 10  # how far ahead to search in sequence for a match
+
+    lines = layout_text.split('\n')
+    html_lines = []
+    for line in lines:
+        tokens = _re.split(r'(\s+)', line)
+        html_tokens = []
+        for token in tokens:
+            if not token.strip():
+                html_tokens.append(_escape(token))
+                continue
+
+            # Try to match token against word_sequence[seq_idx..seq_idx+max_lookahead]
+            conf = None
+            norm_token = _normalize(token)
+
+            if seq_idx < len(word_sequence) and norm_token:
+                # Try exact match at current position first
+                seq_text, seq_conf = word_sequence[seq_idx]
+                norm_seq = _normalize(seq_text)
+
+                if norm_token == norm_seq or norm_token in norm_seq or norm_seq in norm_token:
+                    conf = seq_conf
+                    seq_idx += 1
+                else:
+                    # Lookahead: search ahead for a match
+                    end = min(seq_idx + max_lookahead, len(word_sequence))
+                    for k in range(seq_idx + 1, end):
+                        sk_text, sk_conf = word_sequence[k]
+                        norm_sk = _normalize(sk_text)
+                        if norm_token == norm_sk or norm_token in norm_sk or norm_sk in norm_token:
+                            conf = sk_conf
+                            seq_idx = k + 1
+                            break
+
+            if conf is not None:
+                color = _color_for_conf(conf)
+                html_tokens.append(
+                    f'<span class="ocr-hl" style="color:{color}" '
+                    f'title="{_escape(token)}: {conf:.3f}">'
+                    f'{_escape(token)}</span>'
+                )
+            else:
+                html_tokens.append(f'<span class="ocr-hl" style="color:#f8f8f2">{_escape(token)}</span>')
+        html_lines.append(''.join(html_tokens))
+
+    return '<pre class="pipeline-pre layout-conf">' + '\n'.join(html_lines) + '</pre>'
 
 
 def _render_ocr_section(word_confidence_map: dict[str, float]) -> str:
@@ -286,6 +546,31 @@ _HTML_TEMPLATE = """\
         .ocr-table td { padding: 0.2rem 0.5rem; border-bottom: 1px solid #f1f3f5; }
         .ocr-table tr:hover td { background: #f1f3f5; }
         .ocr-word { font-family: 'Cascadia Code', 'Fira Code', monospace; }
+
+        /* Pipeline sections */
+        .pipeline-section {
+            margin: 1.5rem 0;
+            border: 1px solid #dee2e6;
+            border-radius: 8px;
+            padding: 1rem;
+            background: #fff;
+        }
+        .pipeline-title {
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 1.05rem;
+            color: #343a40;
+        }
+        .pipeline-pre {
+            background: #272822; color: #f8f8f2;
+            padding: 1rem; border-radius: 6px;
+            overflow-x: auto; font-size: 0.78rem;
+            max-height: 500px; white-space: pre-wrap;
+            word-break: break-word; margin-top: 0.75rem;
+        }
+        .layout-highlighted { margin-top: 0.75rem; }
+        .layout-conf { background: #1e1e1e; }
+        .ocr-hl { cursor: default; }
     </style>
 </head>
 <body>
@@ -300,10 +585,19 @@ _HTML_TEMPLATE = """\
 
 {{OCR_SECTION}}
 
-{{TREE_CONTENT}}
+    <details class="pipeline-section" open>
+        <summary class="pipeline-title">1. Final Result (after normalization)</summary>
+        <div style="margin-top: 0.75rem;">{{TREE_CONTENT}}</div>
+    </details>
+
+{{LLM_SECTION}}
+
+{{DIRECT_LLM_SECTION}}
+
+{{LAYOUT_SECTION}}
 
     <details class="json-section">
-        <summary>Show raw JSON</summary>
+        <summary>Show raw JSON (final)</summary>
         <pre>{{JSON_DATA}}</pre>
     </details>
 </body>

@@ -83,6 +83,20 @@ def build_word_confidence_map(result: AnalyzeResult) -> dict[str, float]:
     return {text: min(confs) for text, confs in word_conf.items()}
 
 
+def build_word_confidence_sequence(result: AnalyzeResult) -> list[tuple[str, float]]:
+    """Build ordered list of (word, confidence) preserving every occurrence.
+
+    This is used for layout rendering where each word instance needs its own
+    confidence value (unlike the aggregated map used for field validation).
+    """
+    sequence: list[tuple[str, float]] = []
+    for page in result.pages:
+        if not page.words:
+            continue
+        for word in page.words:
+            sequence.append((word.content, word.confidence))
+    return sequence
+
 def get_value_confidence(value: str, word_confidence_map: dict[str, float]) -> float | None:
     """Calculate confidence for a field value by finding its words in the confidence map.
     Returns the minimum word confidence (worst word determines overall confidence).
