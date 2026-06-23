@@ -15,6 +15,8 @@
     "python.testing.pytestEnabled": false,
     "python.testing.unittestEnabled": true,
     "chat.tools.terminal.autoApprove": {
-        ".vscode": true
+        ".vscode": true,
+        "az": true,
+        "ConvertFrom-Json": true
     }
 }

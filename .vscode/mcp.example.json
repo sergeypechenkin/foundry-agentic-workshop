@@ -1,4 +1,5 @@
 {
+  "_comment": "See .vscode/mcp-auth.md for required Azure authentication setup (sergeype@oopslab.in, tenant: 8902e1d8-1e36-476c-bac5-baa41187c44a)",
   "servers": {
     "ado-remote-mcp": {
       "url": "https://mcp.dev.azure.com/ContosoMortgage123",
