@@ -209,3 +209,6 @@ __marimo__/
 local.settings.json
 
 src/form-extraction/samples/*
+
+# VS Code local MCP configuration (use .vscode/mcp.example.json as template)
+.vscode/mcp.json

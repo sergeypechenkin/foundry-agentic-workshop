@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "ado-remote-mcp": {
+      "url": "https://mcp.dev.azure.com/ContosoMortgage123",
+      "type": "http"
+    }
+  },
+  "inputs": []
+}
