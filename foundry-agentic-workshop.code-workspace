@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "."
+		}
+	],
+	"settings": {
+		"debug.internalConsoleOptions": "neverOpen",
+		"chat.tools.terminal.autoApprove": {
+			".vscode": true,
+			"az": true,
+			"ConvertFrom-Json": true
+		}
+	}
+}

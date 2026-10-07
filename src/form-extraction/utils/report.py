@@ -12,6 +12,8 @@ def generate_html_report(
     llm_fields: dict | None = None,
     word_confidence_sequence: list[tuple[str, float]] | None = None,
     direct_llm_fields: dict | None = None,
+    editable: bool = False,
+    editor_data: dict | None = None,
 ) -> str:
     """Generate HTML document with pipeline stages.
 
@@ -29,6 +31,8 @@ def generate_html_report(
         llm_fields: Fields extracted by LLM before normalization.
         word_confidence_sequence: Ordered (word, confidence) pairs for positional rendering.
         direct_llm_fields: Fields extracted by direct GPT-5.2 call (no OCR preprocessing).
+        editable: If True, render an editable reconstruction UI from direct extraction data.
+        editor_data: Optional explicit data source for editable mode.
 
     Returns:
         HTML string.
@@ -57,6 +61,21 @@ def generate_html_report(
             '</details>\n'
         )
 
+    editor_section = ""
+    if editable:
+        editor_source = editor_data if editor_data is not None else fields
+        if editor_source is not None:
+            editor_section = _render_editable_form(editor_source)
+        else:
+            editor_section = (
+                '<details class="pipeline-section" open>\n'
+                '  <summary class="pipeline-title">Editable Form</summary>\n'
+                '  <div style="margin-top: 0.75rem; color:#6c757d;">'
+                'Direct LLM data was not available, so no editable form could be rendered.'
+                '</div>\n'
+                '</details>\n'
+            )
+
     # Section 3: Raw layout text with word-level confidence highlighting
     layout_section = ""
     if layout_text is not None:
@@ -74,11 +93,14 @@ def generate_html_report(
     ocr_section = _render_ocr_section(word_confidence_map) if word_confidence_map else ""
 
     html = _HTML_TEMPLATE.replace("{{TREE_CONTENT}}", tree_html)
+    html = html.replace("{{EDITOR_SECTION}}", editor_section)
     html = html.replace("{{LLM_SECTION}}", llm_section)
     html = html.replace("{{DIRECT_LLM_SECTION}}", direct_llm_section)
     html = html.replace("{{LAYOUT_SECTION}}", layout_section)
     html = html.replace("{{OCR_SECTION}}", ocr_section)
     html = html.replace("{{JSON_DATA}}", _escape(json.dumps(fields, indent=2, ensure_ascii=False)))
+    html = html.replace("{{EDITOR_JSON}}", _json_script_payload(editor_data if editor_data is not None else fields))
+    html = html.replace("{{EDITOR_SCRIPT}}", _build_editor_script())
 
     if output_path:
         Path(output_path).write_text(html, encoding="utf-8")
@@ -159,7 +181,7 @@ def _render_value(value, confidence: float | None) -> str:
 
 def _is_leaf(obj: dict) -> bool:
     """Check if dict is a {value, confidence} leaf."""
-    return "value" in obj and "confidence" in obj and len(obj) == 2
+    return isinstance(obj, dict) and "value" in obj and "confidence" in obj
 
 
 def _format_key(key: str) -> str:
@@ -218,6 +240,446 @@ def _render_direct_llm(data: dict) -> str:
     for section in all_sections:
         html += _render_direct_section(section, depth=0)
     return html
+
+
+def _render_editable_form(data: dict) -> str:
+    """Render an editable reconstruction of the direct extraction structure."""
+    if _looks_like_normalized_tree(data):
+        return _render_editable_normalized_form(data)
+
+    if "document" in data and "pages" in data["document"]:
+        pages = data["document"]["pages"]
+    elif "pages" in data:
+        pages = data["pages"]
+    else:
+        pages = []
+
+    html = (
+        '<details class="pipeline-section" open>\n'
+        '  <summary class="pipeline-title">Editable Form</summary>\n'
+        '  <div style="margin-top: 0.75rem;">\n'
+        '    <div class="editor-toolbar">\n'
+        '      <button type="button" class="editor-button" data-action="download">Download JSON</button>\n'
+        '      <button type="button" class="editor-button editor-secondary" data-action="copy">Copy JSON</button>\n'
+        '      <button type="button" class="editor-button editor-secondary" data-action="reset">Reset</button>\n'
+        '      <span class="editor-status" id="editor-status">Ready</span>\n'
+        '    </div>\n'
+        '    <form id="editable-form" class="editable-form">\n'
+    )
+
+    for page_index, page in enumerate(pages):
+        page_number = page.get("page_number", page_index + 1)
+        html += (
+            f'<details class="editor-page" open>\n'
+            f'  <summary class="editor-page-title">Page {page_number}</summary>\n'
+            f'  <div class="editor-page-body">\n'
+        )
+        for section_index, section in enumerate(page.get("sections", [])):
+            html += _render_editable_section(section, ["document", "pages", page_index, "sections", section_index])
+        html += '  </div>\n</details>\n'
+
+    html += (
+        '    </form>\n'
+        '  </div>\n'
+        '</details>\n'
+    )
+    return html
+
+
+def _render_editable_normalized_form(data: dict) -> str:
+    """Render an editable form from normalized OCR+LLM output."""
+    return (
+        '<details class="pipeline-section" open>\n'
+        '  <summary class="pipeline-title">Editable Form</summary>\n'
+        '  <div style="margin-top: 0.75rem;">\n'
+        '    <div class="editor-toolbar">\n'
+        '      <button type="button" class="editor-button" data-action="download">Download JSON</button>\n'
+        '      <button type="button" class="editor-button editor-secondary" data-action="copy">Copy JSON</button>\n'
+        '      <button type="button" class="editor-button editor-secondary" data-action="reset">Reset</button>\n'
+        '      <span class="editor-status" id="editor-status">Ready</span>\n'
+        '    </div>\n'
+        '    <form id="editable-form" class="editable-form paper-form">\n'
+        f'{_render_editable_normalized_node(data, [])}'
+        '    </form>\n'
+        '  </div>\n'
+        '</details>\n'
+    )
+
+
+def _render_editable_normalized_node(obj, path: list) -> str:
+    if isinstance(obj, dict):
+        if _is_leaf(obj):
+            return _render_editable_leaf(obj, path, label=None)
+
+        html = ""
+        for key, value in obj.items():
+            label = _format_key(key)
+            child_path = path + [key]
+            if isinstance(value, dict) and _is_leaf(value):
+                html += _render_editable_leaf(value, child_path, label)
+            elif isinstance(value, dict) and not _is_leaf(value):
+                html += (
+                    f'<details class="editor-section paper-section depth-{min(len(child_path), 3)}" open>\n'
+                    f'  <summary class="section-title paper-section-title">{_escape(label)}</summary>\n'
+                    f'  <div class="section-body">{_render_editable_normalized_node(value, child_path)}</div>\n'
+                    f'</details>\n'
+                )
+            elif isinstance(value, list):
+                html += (
+                    f'<details class="editor-section paper-section depth-{min(len(child_path), 3)}" open>\n'
+                    f'  <summary class="section-title paper-section-title">{_escape(label)}</summary>\n'
+                    f'  <div class="section-body">{_render_editable_normalized_node(value, child_path)}</div>\n'
+                    f'</details>\n'
+                )
+            else:
+                html += _render_editable_generic_value(value, child_path, label)
+        return html
+
+    if isinstance(obj, list):
+        html = ""
+        for index, item in enumerate(obj):
+            item_path = path + [index]
+            item_label = f'#{index + 1}'
+            if isinstance(item, dict) and _is_leaf(item):
+                html += _render_editable_leaf(item, item_path, item_label)
+            elif isinstance(item, dict) and not _is_leaf(item):
+                html += (
+                    f'<details class="editor-section paper-section paper-repeat depth-{min(len(item_path), 3)}" open>\n'
+                    f'  <summary class="section-title paper-section-title">{item_label}</summary>\n'
+                    f'  <div class="section-body">{_render_editable_normalized_node(item, item_path)}</div>\n'
+                    f'</details>\n'
+                )
+            elif isinstance(item, list):
+                html += (
+                    f'<details class="editor-section paper-section paper-repeat depth-{min(len(item_path), 3)}" open>\n'
+                    f'  <summary class="section-title paper-section-title">{item_label}</summary>\n'
+                    f'  <div class="section-body">{_render_editable_normalized_node(item, item_path)}</div>\n'
+                    f'</details>\n'
+                )
+            else:
+                html += _render_editable_generic_value(item, item_path, item_label)
+        return html
+
+    return _render_editable_generic_value(obj, path, _format_key(str(path[-1])) if path else "Value")
+
+
+def _render_editable_leaf(obj: dict, path: list, label: str | None) -> str:
+    value = obj.get("value")
+    conf = obj.get("confidence")
+    color, badge = _confidence_style(conf)
+    level = _confidence_level(conf)
+    conf_str = f"{conf:.2f}" if conf is not None else ""
+    value_text = "" if value is None else str(value)
+    path_attr = _escape(json.dumps(path + ["value"], ensure_ascii=False))
+    title = _escape(label or _format_key(str(path[-1])) if path else "Value")
+    return (
+        f'<div class="editor-row paper-row confidence-{level}" data-kind="field" style="--confidence-color:{color}">\n'
+        f'  <div class="editor-label">'
+        f'<span class="editor-label-text">{title}</span>'
+        f'<span class="conf-badge paper-conf" style="color:{color}" title="Confidence: {conf_str}">{badge} {conf_str}</span>'
+        f'</div>\n'
+        f'  <input type="text" class="editor-control editor-input" data-path="{path_attr}" value="{_escape(value_text)}">\n'
+        f'</div>\n'
+    )
+
+
+def _render_editable_generic_value(value, path: list, label: str) -> str:
+    path_attr = _escape(json.dumps(path, ensure_ascii=False))
+    title = _escape(label)
+    if isinstance(value, bool):
+        return (
+            f'<div class="editor-row paper-row confidence-none" data-kind="checkbox" style="--confidence-color:#6c757d">\n'
+            f'  <div class="editor-label"><span class="editor-label-text">{title}</span></div>\n'
+            f'  <label class="editor-control checkbox-control">'
+            f'<input type="checkbox" data-path="{path_attr}" {"checked" if value else ""}>'
+            f'<span>{"Checked" if value else "Unchecked"}</span>'
+            f'</label>\n'
+            f'</div>\n'
+        )
+
+    value_text = "" if value is None else str(value)
+    return (
+        f'<div class="editor-row paper-row confidence-none" data-kind="field" style="--confidence-color:#6c757d">\n'
+        f'  <div class="editor-label"><span class="editor-label-text">{title}</span></div>\n'
+        f'  <input type="text" class="editor-control editor-input" data-path="{path_attr}" value="{_escape(value_text)}">\n'
+        f'</div>\n'
+    )
+
+
+def _confidence_level(confidence: float | None) -> str:
+    if confidence is None:
+        return "none"
+    if confidence < 0.7:
+        return "low"
+    if confidence < 0.9:
+        return "medium"
+    return "high"
+
+
+def _looks_like_normalized_tree(data: dict) -> bool:
+    return isinstance(data, dict) and not (
+        ("document" in data and isinstance(data.get("document"), dict) and "pages" in data["document"])
+        or "pages" in data
+    )
+
+
+def _render_editable_section(section: dict, path: list) -> str:
+    title = section.get("title") or "Untitled Section"
+    conf = section.get("confidence")
+    color, badge = _confidence_style(conf)
+    title_html = _escape(title)
+    if conf is not None:
+        title_html += (
+            f' <span class="conf-badge" style="color:{color}" '
+            f'title="Section confidence: {conf:.2f}">{badge} {conf:.2f}</span>'
+        )
+
+    html = (
+        f'<details class="editor-section depth-{min(len(path), 3)}" open>\n'
+        f'  <summary class="section-title">{title_html}</summary>\n'
+        f'  <div class="section-body">\n'
+    )
+
+    for content_index, item in enumerate(section.get("content", [])):
+        html += _render_editable_content_item(item, path + ["content", content_index])
+
+    for subsection_index, subsection in enumerate(section.get("subsections", [])):
+        html += _render_editable_section(subsection, path + ["subsections", subsection_index])
+
+    html += '  </div>\n</details>\n'
+    return html
+
+
+def _render_editable_content_item(item: dict, path: list) -> str:
+    item_type = item.get("type", "field")
+    conf = item.get("confidence")
+    color, badge = _confidence_style(conf)
+    conf_str = f"{conf:.2f}" if conf is not None else ""
+    path_attr = _escape(json.dumps(path, ensure_ascii=False))
+
+    if item_type == "checkbox":
+        checked = bool(item.get("checked"))
+        label = item.get("label", "")
+        return (
+            f'<div class="editor-row" data-path="{path_attr}" data-kind="checkbox">\n'
+            f'  <div class="editor-label">'
+            f'<span class="editor-label-text">{_escape(label)}</span>'
+            f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">{badge} {conf_str}</span>'
+            f'</div>\n'
+            f'  <label class="editor-control checkbox-control">'
+            f'<input type="checkbox" data-field="checked" {"checked" if checked else ""}>'
+            f'<span>{"Checked" if checked else "Unchecked"}</span>'
+            f'</label>\n'
+            f'</div>\n'
+        )
+
+    if item_type == "text_block":
+        text = item.get("text", "") or ""
+        label = item.get("label") or "Text"
+        return (
+            f'<div class="editor-row" data-path="{path_attr}" data-kind="text_block">\n'
+            f'  <div class="editor-label">'
+            f'<span class="editor-label-text">{_escape(label)}</span>'
+            f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">{badge} {conf_str}</span>'
+            f'</div>\n'
+            f'  <textarea class="editor-control editor-textarea" data-field="text" rows="3">{_escape(text)}</textarea>\n'
+            f'</div>\n'
+        )
+
+    if item_type == "table":
+        headers = item.get("headers", [])
+        rows = item.get("rows", [])
+        html = (
+            f'<div class="editor-row editor-table-wrap" data-path="{path_attr}" data-kind="table">\n'
+            f'  <div class="editor-label">'
+            f'<span class="editor-label-text">Table</span>'
+            f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">{badge} {conf_str}</span>'
+            f'</div>\n'
+            f'  <table class="editor-table">\n'
+            f'    <thead><tr>'
+        )
+        for header in headers:
+            html += f'<th>{_escape(str(header))}</th>'
+        html += '</tr></thead>\n    <tbody>\n'
+        for row_index, row in enumerate(rows):
+            html += '<tr>'
+            for col_index, cell in enumerate(row):
+                cell_path = _escape(json.dumps(path + ["rows", row_index, col_index], ensure_ascii=False))
+                html += (
+                    f'<td><input type="text" class="editor-control editor-cell" '
+                    f'data-path="{cell_path}" value="{_escape(str(cell))}"></td>'
+                )
+            html += '</tr>\n'
+        html += '    </tbody>\n  </table>\n</div>\n'
+        return html
+
+    label = item.get("label", "")
+    value = item.get("value")
+    value_text = "" if value is None else str(value)
+    return (
+        f'<div class="editor-row" data-path="{path_attr}" data-kind="field">\n'
+        f'  <div class="editor-label">'
+        f'<span class="editor-label-text">{_escape(label)}</span>'
+        f'<span class="conf-badge" style="color:{color}" title="Confidence: {conf_str}">{badge} {conf_str}</span>'
+        f'</div>\n'
+        f'  <input type="text" class="editor-control editor-input" data-field="value" value="{_escape(value_text)}">\n'
+        f'</div>\n'
+    )
+
+
+def _json_script_payload(data: dict | None) -> str:
+    if data is None:
+        return "null"
+    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+
+
+def _build_editor_script() -> str:
+    return """
+(function () {
+    const dataNode = document.getElementById('editor-data');
+    const statusNode = document.getElementById('editor-status');
+    const form = document.getElementById('editable-form');
+    const toolbar = document.querySelector('.editor-toolbar');
+
+    if (!dataNode || !form || !toolbar) {
+        return;
+    }
+
+    const initialData = JSON.parse(dataNode.textContent || 'null');
+    let dirty = false;
+
+    function setStatus(message) {
+        if (statusNode) {
+            statusNode.textContent = message;
+        }
+    }
+
+    function cloneData(value) {
+        return JSON.parse(JSON.stringify(value));
+    }
+
+    function setAtPath(root, path, value) {
+        let target = root;
+        for (let index = 0; index < path.length - 1; index += 1) {
+            const key = path[index];
+            if (target[key] === undefined || target[key] === null) {
+                target[key] = typeof path[index + 1] === 'number' ? [] : {};
+            }
+            target = target[key];
+        }
+        target[path[path.length - 1]] = value;
+    }
+
+    function serializeForm() {
+        const snapshot = cloneData(initialData);
+        const controls = form.querySelectorAll('[data-path]');
+
+        controls.forEach((control) => {
+            const path = JSON.parse(control.dataset.path);
+            if (control.matches('input[type="checkbox"]:not([data-field="checked"])')) {
+                setAtPath(snapshot, path, control.checked);
+                return;
+            }
+            if (control.matches('input[type="checkbox"][data-field="checked"]')) {
+                setAtPath(snapshot, path.concat(['checked']), control.checked);
+                return;
+            }
+            if (control.matches('textarea[data-field="text"]')) {
+                setAtPath(snapshot, path.concat(['text']), control.value);
+                return;
+            }
+            if (control.matches('input.editor-input:not([data-field="value"])')) {
+                setAtPath(snapshot, path, control.value);
+                return;
+            }
+            if (control.matches('input[data-field="value"]')) {
+                setAtPath(snapshot, path.concat(['value']), control.value);
+                return;
+            }
+            if (control.matches('input.editor-cell')) {
+                setAtPath(snapshot, path, control.value);
+            }
+        });
+
+        return snapshot;
+    }
+
+    function downloadJson() {
+        const payload = serializeForm();
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = 'corrected-form.json';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        URL.revokeObjectURL(url);
+        setStatus('JSON downloaded');
+        dirty = false;
+    }
+
+    async function copyJson() {
+        const payload = JSON.stringify(serializeForm(), null, 2);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(payload);
+        } else {
+            const fallback = document.createElement('textarea');
+            fallback.value = payload;
+            document.body.appendChild(fallback);
+            fallback.select();
+            document.execCommand('copy');
+            fallback.remove();
+        }
+        setStatus('JSON copied to clipboard');
+        dirty = false;
+    }
+
+    function resetEditor() {
+        window.location.reload();
+    }
+
+    toolbar.addEventListener('click', async (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) {
+            return;
+        }
+        const action = button.dataset.action;
+        try {
+            if (action === 'download') {
+                downloadJson();
+            } else if (action === 'copy') {
+                await copyJson();
+            } else if (action === 'reset') {
+                resetEditor();
+            }
+        } catch (error) {
+            console.error(error);
+            setStatus('Unable to complete action');
+        }
+    });
+
+    form.addEventListener('input', () => {
+        dirty = true;
+        setStatus('Unsaved changes');
+    });
+
+    form.addEventListener('change', () => {
+        dirty = true;
+        setStatus('Unsaved changes');
+    });
+
+    window.addEventListener('beforeunload', (event) => {
+        if (!dirty) {
+            return;
+        }
+        event.preventDefault();
+        event.returnValue = '';
+    });
+
+    setStatus('Ready');
+})();
+""".strip()
 
 
 def _render_direct_section(section: dict, depth: int) -> str:
@@ -571,6 +1033,139 @@ _HTML_TEMPLATE = """\
         .layout-highlighted { margin-top: 0.75rem; }
         .layout-conf { background: #1e1e1e; }
         .ocr-hl { cursor: default; }
+
+        /* Editable reconstruction */
+        .editor-toolbar {
+            display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+            margin-bottom: 1rem;
+        }
+        .editor-button {
+            border: 1px solid #343a40; background: #343a40; color: #fff;
+            padding: 0.45rem 0.8rem; border-radius: 6px; cursor: pointer;
+            font-size: 0.86rem;
+        }
+        .editor-button:hover { filter: brightness(1.05); }
+        .editor-secondary {
+            background: #fff; color: #343a40; border-color: #adb5bd;
+        }
+        .editor-status { color: #6c757d; font-size: 0.85rem; margin-left: auto; }
+        .editable-form { display: block; }
+        .paper-form {
+            background: linear-gradient(180deg, #f6f0e2 0%, #f9f4ea 100%);
+            border: 1px solid #d7ccb7; border-radius: 18px;
+            box-shadow: 0 16px 40px rgba(72, 55, 20, 0.08);
+            padding: 1.5rem;
+        }
+        .editor-page, .editor-section {
+            border-left: 3px solid #ced4da; margin: 0.5rem 0; padding-left: 1rem;
+        }
+        .editor-page-title {
+            cursor: pointer; font-weight: 700; font-size: 0.98rem; color: #343a40;
+        }
+        .paper-section {
+            border-left: none; padding-left: 0; margin: 1rem 0;
+            border: 1px solid #d7ccb7; border-radius: 14px;
+            background: rgba(255, 255, 255, 0.72);
+            overflow: hidden;
+        }
+        .paper-repeat {
+            background: rgba(248, 243, 233, 0.9);
+        }
+        .paper-section-title {
+            background: #efe6d5;
+            padding: 0.75rem 1rem;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            font-size: 0.82rem;
+            border-bottom: 1px solid #ddcfb1;
+        }
+        .paper-section > .section-body {
+            padding: 0.8rem 1rem 1rem;
+        }
+        .editor-row {
+            margin: 0.5rem 0 0.75rem; padding: 0.6rem 0.75rem;
+            background: #fff; border: 1px solid #dee2e6; border-radius: 8px;
+        }
+        .paper-row {
+            display: grid;
+            grid-template-columns: minmax(220px, 34%) minmax(0, 1fr);
+            align-items: end;
+            gap: 0.9rem;
+            border: none;
+            border-bottom: 2px solid color-mix(in srgb, var(--confidence-color) 32%, #d7ccb7 68%);
+            border-radius: 0;
+            background: transparent;
+            padding: 0.55rem 0 0.7rem;
+            margin: 0;
+        }
+        .paper-row + .paper-row {
+            margin-top: 0.1rem;
+        }
+        .editor-label {
+            display: flex; justify-content: space-between; gap: 0.75rem;
+            align-items: baseline; margin-bottom: 0.35rem;
+        }
+        .paper-row .editor-label {
+            margin-bottom: 0;
+            padding-right: 0.75rem;
+            border-right: 1px solid #e4d8c3;
+            min-height: 100%;
+        }
+        .editor-label-text {
+            font-weight: 600; color: #2f2a20;
+            font-family: Georgia, 'Times New Roman', serif;
+        }
+        .editor-control {
+            width: 100%; border: 1px solid #ced4da; border-radius: 6px;
+            padding: 0.55rem 0.7rem; font-size: 0.92rem; background: #fff;
+        }
+        .paper-row .editor-control {
+            border: none;
+            border-radius: 0;
+            border-bottom: 2px solid color-mix(in srgb, var(--confidence-color) 55%, #c9baa1 45%);
+            background: rgba(255,255,255,0.65);
+            padding: 0.42rem 0.15rem 0.35rem;
+            color: #1f2933;
+            font-weight: 600;
+            box-shadow: none;
+        }
+        .editor-control:focus {
+            outline: none; border-color: #343a40; box-shadow: 0 0 0 3px rgba(52, 58, 64, 0.12);
+        }
+        .paper-row .editor-control:focus {
+            border-bottom-color: #1f2933;
+            box-shadow: 0 10px 18px rgba(31, 41, 51, 0.08);
+        }
+        .editor-textarea { resize: vertical; min-height: 5rem; }
+        .checkbox-control {
+            display: inline-flex; align-items: center; gap: 0.5rem; width: auto;
+            border: none; padding: 0.15rem 0;
+        }
+        .paper-conf {
+            min-width: 4rem;
+            text-align: right;
+        }
+        .checkbox-control input { width: 1rem; height: 1rem; }
+        .editor-table-wrap { overflow-x: auto; }
+        .editor-table {
+            width: 100%; border-collapse: collapse; margin-top: 0.35rem;
+            background: #fff;
+        }
+        .editor-table th, .editor-table td {
+            border: 1px solid #dee2e6; padding: 0.35rem; vertical-align: top;
+        }
+        .editor-table th { background: #f8f9fa; text-align: left; }
+        .editor-cell { min-width: 8rem; }
+        @media (max-width: 900px) {
+            .paper-row {
+                grid-template-columns: 1fr;
+                gap: 0.45rem;
+            }
+            .paper-row .editor-label {
+                border-right: none;
+                padding-right: 0;
+            }
+        }
     </style>
 </head>
 <body>
@@ -582,6 +1177,8 @@ _HTML_TEMPLATE = """\
         <span style="color:#dc3545">⚠️ Low (&lt;0.70)</span>
         <span style="color:#666">— No data</span>
     </div>
+
+{{EDITOR_SECTION}}
 
 {{OCR_SECTION}}
 
@@ -600,6 +1197,11 @@ _HTML_TEMPLATE = """\
         <summary>Show raw JSON (final)</summary>
         <pre>{{JSON_DATA}}</pre>
     </details>
+
+    <script id="editor-data" type="application/json">{{EDITOR_JSON}}</script>
+    <script>
+{{EDITOR_SCRIPT}}
+    </script>
 </body>
 </html>
 """
