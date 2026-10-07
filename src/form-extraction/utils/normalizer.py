@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 
 # ANSI colors for terminal output
@@ -228,17 +229,27 @@ def _valid_email(value: str) -> bool:
     if not isinstance(value, str):
         return False
     value = value.strip()
-    if len(value) > 254 or value.count('@') != 1:
+    if len(value) > 254:
         return False
-    local, domain = value.split('@')
-    if not local or len(local) > 64:
+    local, separator, domain = value.rpartition('@')
+    if not separator or not local or len(local) > 64:
         return False
     atom = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+    quoted = r'"(?:[\x20-\x21\x23-\x5b\x5d-\x7e]|\\[\x20-\x7e])*"'
+    if not re.fullmatch(rf'(?:{atom}(?:\.{atom})*|{quoted})', local):
+        return False
+    if domain.startswith('[') and domain.endswith(']'):
+        literal = domain[1:-1]
+        try:
+            if literal.lower().startswith('ipv6:'):
+                return ipaddress.IPv6Address(literal[5:]).scope_id is None
+            else:
+                ipaddress.IPv4Address(literal)
+            return True
+        except ValueError:
+            return False
     label = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
-    return bool(
-        re.fullmatch(rf'{atom}(?:\.{atom})*', local)
-        and re.fullmatch(rf'{label}(?:\.{label})+', domain)
-    )
+    return bool(re.fullmatch(rf'{label}(?:\.{label})+', domain))
 
 
 @_rule('Email', re.compile(r'(?i)(e[-_\s]?mail|email[\s_]*address)'), _valid_email)
