@@ -33,7 +33,7 @@ credential = DefaultAzureCredential(), not connection strings or keys.
 ## This project uses Azure DevOps.
 
 Always check whether the Azure DevOps MCP server has a tool relevant to the user's request before answering from general knowledge.
-Default organization: ContosoMortgage123.
+Default organization: ContosoMortgage123, default project Contosomortgage
 When the project is not specified, ask once and remember for the rest of the conversation.
 When creating work items, always set area path, iteration, and assignee if known.
 When creating PRs, link the related work item in the description.
