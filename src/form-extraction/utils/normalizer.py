@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import re
 
 # ANSI colors for terminal output
@@ -225,13 +226,36 @@ def _normalize_passport(value: str) -> str:
 
 
 def _valid_email(value: str) -> bool:
-    return bool(re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', value))
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    if len(value) > 254:
+        return False
+    local, separator, domain = value.rpartition('@')
+    if not separator or not local or len(local) > 64:
+        return False
+    atom = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]+"
+    quoted = r'"(?:[\x20-\x21\x23-\x5b\x5d-\x7e]|\\[\x20-\x7e])*"'
+    if not re.fullmatch(rf'(?:{atom}(?:\.{atom})*|{quoted})', local):
+        return False
+    if domain.startswith('[') and domain.endswith(']'):
+        literal = domain[1:-1]
+        try:
+            if literal.lower().startswith('ipv6:'):
+                return ipaddress.IPv6Address(literal[5:]).scope_id is None
+            else:
+                ipaddress.IPv4Address(literal)
+            return True
+        except ValueError:
+            return False
+    label = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+    return bool(re.fullmatch(rf'{label}(?:\.{label})+', domain))
 
 
 @_rule('Email', re.compile(r'(?i)(e[-_\s]?mail|email[\s_]*address)'), _valid_email)
 def _normalize_email(value: str) -> str:
-    # Email cannot contain spaces
-    return re.sub(r'\s', '', value).lower()
+    # Trim surrounding whitespace without hiding invalid internal spaces.
+    return value.strip().lower()
 
 
 @_rule('Place', re.compile(r'(?i)(city|town|country|nationality|county|region|state|place[\s_]*of[\s_]*birth)'), _valid_place)
